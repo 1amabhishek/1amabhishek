@@ -1,0 +1,90 @@
+using System;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+
+namespace GitHubSearch
+{
+    public class SearchQuery
+    {
+        [JsonProperty("q")]
+        public string Query { get; set; }
+
+        [JsonProperty("per_page")]
+        public int PerPage { get; set; } = 100; // Default value
+    }
+
+    public class SearchResponse
+    {
+        [JsonProperty("total_count")]
+        public int TotalCount { get; set; }
+
+        [JsonProperty("items")]
+        public List<SearchResult> Items { get; set; }
+    }
+
+    public class SearchResult
+    {
+        [JsonProperty("repository")]
+        public Repository Repository { get; set; }
+
+        [JsonProperty("path")]
+        public string Path { get; set; }
+
+        [JsonProperty("url")]
+        public string Url { get; set; }
+    }
+
+    public class Repository
+    {
+        [JsonProperty("name")]
+        public string Name { get; set; }
+
+        [JsonProperty("full_name")]
+        public string FullName { get; set; }
+    }
+
+    class Program
+    {
+        static async Task Main(string[] args)
+        {
+            string token = "your-github-token"; // Replace with your GitHub token
+            string searchTerm = "asset"; // Replace with your search term
+            string githubUser = "charlesschwab"; // Your GitHub username
+
+            var response = await SearchGitHubCode(searchTerm, githubUser, token);
+
+            if (response != null && response.Items != null)
+            {
+                Console.WriteLine($"Found {response.TotalCount} matches:");
+                foreach (var item in response.Items)
+                {
+                    Console.WriteLine($"- Repo: {item.Repository.FullName}, File: {item.Path}, URL: {item.Url}");
+                }
+            }
+            else
+            {
+                Console.WriteLine("No matches found.");
+            }
+        }
+
+        static async Task<SearchResponse> SearchGitHubCode(string query, string user, string token)
+        {
+            using (HttpClient client = new HttpClient())
+            {
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                client.DefaultRequestHeaders.Add("User-Agent", "CSharp-Console-App");
+
+                string url = $"https://api.github.com/search/code?q={query}+user:{user}";
+                var response = await client.GetAsync(url);
+
+                response.EnsureSuccessStatusCode();
+
+                string responseBody = await response.Content.ReadAsStringAsync();
+                return JsonConvert.DeserializeObject<SearchResponse>(responseBody);
+            }
+        }
+    }
+}
