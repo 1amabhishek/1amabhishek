@@ -53,16 +53,30 @@ class Program
             Console.WriteLine($"Searching for ID: {id}");
             var results = await SearchGitHub(id, token);
 
-            // Add ID to each result
-            foreach (var result in results)
+            if (results.Count == 0)
             {
+                // Add a "No data found" entry for this ID
                 allResults.Add(new SearchResultWithId
                 {
                     Id = id,
-                    Repository = result.Repository,
-                    Path = result.Path,
-                    Url = result.Url
+                    Repository = new Repository { FullName = "No data found" },
+                    Path = "N/A",
+                    Url = "N/A"
                 });
+            }
+            else
+            {
+                // Add search results with the corresponding ID
+                foreach (var result in results)
+                {
+                    allResults.Add(new SearchResultWithId
+                    {
+                        Id = id,
+                        Repository = result.Repository,
+                        Path = result.Path,
+                        Url = result.Url
+                    });
+                }
             }
         }
 
@@ -200,38 +214,4 @@ class SearchResultWithId
     public Repository Repository { get; set; }
     public string Path { get; set; }
     public string Url { get; set; }
-}
-
-
-
-foreach (var id in ids)
-{
-    Console.WriteLine($"Searching for ID: {id}");
-    var results = await SearchGitHub(id, token);
-
-    if (results.Count == 0)
-    {
-        // Add a "No data found" entry for this ID
-        allResults.Add(new SearchResultWithId
-        {
-            Id = id,
-            Repository = new Repository { FullName = "No data found" },
-            Path = "N/A",
-            Url = "N/A"
-        });
-    }
-    else
-    {
-        // Add search results with the corresponding ID
-        foreach (var result in results)
-        {
-            allResults.Add(new SearchResultWithId
-            {
-                Id = id,
-                Repository = result.Repository,
-                Path = result.Path,
-                Url = result.Url
-            });
-        }
-    }
 }
