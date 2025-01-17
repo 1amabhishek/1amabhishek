@@ -1,0 +1,274 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Web;
+using Newtonsoft.Json;
+using OfficeOpenXml;
+
+public class Program
+{
+    private const int MaxRetries = 3;
+    private const int RetryDelay = 2000; // 2 seconds
+
+    public static async Task Main(string[] args)
+    {
+        string inputFilePath = args.Length > 0 ? args[0] : PromptForInput("Enter the path of the Excel file containing IDs: ");
+        string token = args.Length > 1 ? args[1] : PromptForInput("Enter your GitHub personal access token: ");
+        string outputFilePath = args.Length > 2 ? args[2] : PromptForInput("Enter the path for the output Excel file: ");
+
+        if (!File.Exists(inputFilePath))
+        {
+            Console.WriteLine("Error: Input file not found.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            Console.WriteLine("Error: Token cannot be empty.");
+            return;
+        }
+
+        List<string> ids = ReadIdsFromExcel(inputFilePath);
+        if (ids == null || ids.Count == 0)
+        {
+            Console.WriteLine("Error: No IDs found in the input file.");
+            return;
+        }
+
+        List<SearchResultWithId> allResults = new List<SearchResultWithId>();
+
+        foreach (var id in ids)
+        {
+            Console.WriteLine($"Searching for ID: {id}");
+            var variations = GenerateQueryVariations(id);
+
+            bool foundData = false;
+
+            foreach (var variation in variations)
+            {
+                var results = await SearchGitHub(variation, token);
+
+                if (results.Count > 0)
+                {
+                    foundData = true;
+                    foreach (var result in results)
+                    {
+                        allResults.Add(new SearchResultWithId
+                        {
+                            Id = id,
+                            Query = variation,
+                            Repository = result.Repository,
+                            Path = result.Path,
+                            Url = result.Url
+                        });
+                    }
+                }
+            }
+
+            if (!foundData)
+            {
+                allResults.Add(new SearchResultWithId
+                {
+                    Id = id,
+                    Query = "No data found",
+                    Repository = new Repository { FullName = "No data found" },
+                    Path = "N/A",
+                    Url = "N/A"
+                });
+            }
+        }
+
+        WriteResultsToExcel(outputFilePath, allResults);
+        Console.WriteLine("Search completed. Results saved to " + outputFilePath);
+    }
+
+    private static string PromptForInput(string message)
+    {
+        Console.Write(message);
+        return Console.ReadLine();
+    }
+
+    private static List<string> ReadIdsFromExcel(string filePath)
+    {
+        try
+        {
+            ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+            using (var package = new ExcelPackage(new FileInfo(filePath)))
+            {
+                var worksheet = package.Workbook.Worksheets[0];
+                int rowCount = worksheet.Dimension.Rows;
+
+                List<string> ids = new List<string>();
+                for (int row = 1; row <= rowCount; row++)
+                {
+                    string id = worksheet.Cells[row, 1].Text.Trim();
+                    if (!string.IsNullOrEmpty(id))
+                    {
+                        ids.Add(id);
+                    }
+                }
+
+                return ids;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error reading Excel file: " + ex.Message);
+            return null;
+        }
+    }
+
+    private static async Task<List<SearchResult>> SearchGitHub(string query, string token)
+    {
+        using (var client = new HttpClient())
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("AppName", "1.0"));
+
+            var results = new List<SearchResult>();
+
+            for (int page = 1; page <= 10; page++)
+            {
+                string url = $"https://api.github.com/search/code?q={query}&per_page=100&page={page}";
+
+                for (int retry = 0; retry < MaxRetries; retry++)
+                {
+                    try
+                    {
+                        var response = await client.GetAsync(url);
+
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            Console.WriteLine($"Error: {response.StatusCode}, {response.ReasonPhrase}");
+                            if (response.StatusCode == HttpStatusCode.Forbidden && response.Headers.Contains("X-RateLimit-Remaining"))
+                            {
+                                Console.WriteLine("Rate limit reached. Pausing for reset.");
+                                Thread.Sleep(RetryDelay);
+                            }
+                            break;
+                        }
+
+                        var responseBody = await response.Content.ReadAsStringAsync();
+                        var searchResponse = JsonConvert.DeserializeObject<SearchResponse>(responseBody);
+
+                        if (searchResponse?.Items == null || !searchResponse.Items.Any())
+                            break;
+
+                        results.AddRange(searchResponse.Items);
+
+                        if (searchResponse.IncompleteResults)
+                        {
+                            Console.WriteLine("Warning: Incomplete results detected.");
+                            break;
+                        }
+
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Error during API call: " + ex.Message);
+                        if (retry == MaxRetries - 1)
+                        {
+                            Console.WriteLine("Max retries reached. Skipping query.");
+                            break;
+                        }
+                        Thread.Sleep(RetryDelay);
+                    }
+                }
+            }
+
+            return results;
+        }
+    }
+
+    private static void WriteResultsToExcel(string filePath, List<SearchResultWithId> results)
+    {
+        try
+        {
+            ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+            using (var package = new ExcelPackage())
+            {
+                var worksheet = package.Workbook.Worksheets.Add("Results");
+
+                worksheet.Cells[1, 1].Value = "ID";
+                worksheet.Cells[1, 2].Value = "Query";
+                worksheet.Cells[1, 3].Value = "Repository";
+                worksheet.Cells[1, 4].Value = "Path";
+                worksheet.Cells[1, 5].Value = "URL";
+
+                int row = 2;
+                foreach (var result in results)
+                {
+                    worksheet.Cells[row, 1].Value = result.Id;
+                    worksheet.Cells[row, 2].Value = result.Query;
+                    worksheet.Cells[row, 3].Value = result.Repository.FullName;
+                    worksheet.Cells[row, 4].Value = result.Path;
+                    worksheet.Cells[row, 5].Value = result.Url;
+                    row++;
+                }
+
+                package.SaveAs(new FileInfo(filePath));
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error writing Excel file: " + ex.Message);
+        }
+    }
+
+    private static List<string> GenerateQueryVariations(string id)
+    {
+        string decodedId = DecodeHtmlEntities(id);
+
+        var variations = new List<string>
+        {
+            decodedId,
+            decodedId.ToLower(),
+            decodedId.ToUpper(),
+            $"cmsid={decodedId}",
+            $"cmsid={decodedId.ToLower()}",
+            $"cmsid={decodedId.ToUpper()}"
+        };
+
+        return new HashSet<string>(variations).ToList();
+    }
+
+    private static string DecodeHtmlEntities(string input)
+    {
+        return WebUtility.HtmlDecode(HttpUtility.UrlDecode(input));
+    }
+
+    public class SearchResponse
+    {
+        public bool IncompleteResults { get; set; }
+        public List<SearchResult> Items { get; set; }
+    }
+
+    public class SearchResult
+    {
+        public Repository Repository { get; set; }
+        public string Path { get; set; }
+        public string Url => $"https://github.com/{Repository.FullName}/blob/main/{Path}";
+    }
+
+    public class Repository
+    {
+        public string FullName { get; set; }
+    }
+
+    public class SearchResultWithId
+    {
+        public string Id { get; set; }
+        public string Query { get; set; }
+        public Repository Repository { get; set; }
+        public string Path { get; set; }
+        public string Url { get; set; }
+    }
+}
