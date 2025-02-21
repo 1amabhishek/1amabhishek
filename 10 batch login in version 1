@@ -54,34 +54,39 @@ class Program
             var batch = ids.GetRange(i, Math.Min(batchSize, ids.Count - i));
             Console.WriteLine($"Processing batch {i / batchSize + 1}: {string.Join(", ", batch)}");
 
+            var batchResults = new List<List<SearchResultWithId>>();
             foreach (var id in batch)
             {
-                Console.WriteLine($"Searching for ID: {id}");
+                Console.WriteLine($"🔍 Searching for ID: {id}");
                 var results = await SearchGitHub(id, token);
 
-                if (results.Count == 0) // No results found, add a null entry
+                if (results.Count == 0) // No results found, add a NULL entry
                 {
-                    allResults.Add(new SearchResultWithId
+                    batchResults.Add(new List<SearchResultWithId>
                     {
-                        Id = id,
-                        Repository = new Repository { FullName = "NULL" },
-                        Path = "NULL",
-                        Url = "NULL"
+                        new SearchResultWithId
+                        {
+                            Id = id,
+                            Repository = new Repository { FullName = "NULL" },
+                            Path = "NULL",
+                            Url = "NULL"
+                        }
                     });
                 }
                 else
                 {
-                    foreach (var result in results)
-                    {
-                        allResults.Add(new SearchResultWithId
-                        {
-                            Id = id,
-                            Repository = result.Repository,
-                            Path = result.Path,
-                            Url = result.Url
-                        });
-                    }
+                    batchResults.Add(results);
                 }
+            }
+
+            foreach (var result in batchResults)
+            {
+                if (result.Count > 0)
+                    Console.WriteLine($"✅ Retrieved {result.Count} results for batch {i / batchSize + 1}");
+                else
+                    Console.WriteLine($"❌ No results found for batch {i / batchSize + 1}");
+
+                allResults.AddRange(result);
             }
         }
 
@@ -89,7 +94,7 @@ class Program
         string outputFilePath = Path.Combine(outputDirectory, "GitHubSearchResults.xlsx");
         WriteResultsToExcel(allResults, outputFilePath);
 
-        Console.WriteLine($"Results written to {outputFilePath}");
+        Console.WriteLine($"✅ Results written to {outputFilePath}");
     }
 
     /// <summary>
@@ -121,11 +126,11 @@ class Program
     /// <summary>
     /// Searches GitHub for a given query using the API and handles rate limiting.
     /// </summary>
-    static async Task<List<SearchResult>> SearchGitHub(string query, string token)
+    static async Task<List<SearchResultWithId>> SearchGitHub(string query, string token)
     {
         const int perPage = 100;
         int page = 1;
-        var allResults = new List<SearchResult>();
+        var allResults = new List<SearchResultWithId>();
         int retryDelay = 5; // Initial wait time in seconds
 
         using (HttpClient client = new HttpClient())
@@ -143,37 +148,30 @@ class Program
                 {
                     if (statusCode == 429) // Too Many Requests
                     {
-                        Console.WriteLine($"Rate limit exceeded. Retrying in {retryDelay} seconds...");
+                        Console.WriteLine($"⚠ Rate limit exceeded. Retrying in {retryDelay} seconds...");
                         await Task.Delay(retryDelay * 1000);
-                        retryDelay *= 2; // Exponential backoff
+                        retryDelay = Math.Min(retryDelay * 2, 60); // Exponential backoff, max 60 sec
                         continue;
                     }
                     else if (statusCode == 403) // Forbidden
                     {
-                        IEnumerable<string> rateLimitHeaders;
-                        if (response.Headers.TryGetValues("X-RateLimit-Remaining", out rateLimitHeaders) &&
-                            int.TryParse(rateLimitHeaders.FirstOrDefault(), out int remaining) && remaining == 0)
+                        if (response.Headers.TryGetValues("X-RateLimit-Reset", out var resetValues))
                         {
-                            if (response.Headers.TryGetValues("X-RateLimit-Reset", out var resetValues))
-                            {
-                                long resetTimeUnix = long.Parse(resetValues.FirstOrDefault() ?? "0");
-                                DateTimeOffset resetTime = DateTimeOffset.FromUnixTimeSeconds(resetTimeUnix);
-                                TimeSpan waitTime = resetTime - DateTimeOffset.UtcNow;
+                            long resetTimeUnix = long.Parse(resetValues.FirstOrDefault() ?? "0");
+                            DateTimeOffset resetTime = DateTimeOffset.FromUnixTimeSeconds(resetTimeUnix);
+                            int waitSeconds = Math.Min((int)(resetTime - DateTimeOffset.UtcNow).TotalSeconds, 60);
 
-                                Console.WriteLine($"Rate limit reached. Waiting until {resetTime}...");
-                                await Task.Delay(waitTime);
-                                continue;
-                            }
+                            Console.WriteLine($"⚠ Rate limit reached. Waiting for {waitSeconds} seconds...");
+                            await Task.Delay(waitSeconds * 1000);
+                            continue;
                         }
-                        else
-                        {
-                            Console.WriteLine($"Forbidden (403): Check your token permissions.");
-                            break;
-                        }
+
+                        Console.WriteLine($"❌ Forbidden (403): Check your token permissions.");
+                        break;
                     }
                     else
                     {
-                        Console.WriteLine($"Error {statusCode}: {response.ReasonPhrase}");
+                        Console.WriteLine($"❌ Error {statusCode}: {response.ReasonPhrase}");
                         break;
                     }
                 }
@@ -186,7 +184,16 @@ class Program
                     break;
                 }
 
-                allResults.AddRange(searchResponse.Items);
+                foreach (var result in searchResponse.Items)
+                {
+                    allResults.Add(new SearchResultWithId
+                    {
+                        Id = query,
+                        Repository = result.Repository,
+                        Path = result.Path,
+                        Url = result.Url
+                    });
+                }
 
                 if (searchResponse.Items.Count < perPage)
                 {
