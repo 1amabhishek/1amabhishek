@@ -1,0 +1,200 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+using OfficeOpenXml;
+using System.Linq;
+
+class Program
+{
+    static async Task Main(string[] args)
+    {
+        Console.WriteLine("Enter the full path of the Excel file containing the search IDs:");
+        string excelFilePath = Console.ReadLine();
+
+        if (!File.Exists(excelFilePath))
+        {
+            Console.WriteLine("Error: Excel file not found at the specified path.");
+            return;
+        }
+
+        Console.WriteLine("Enter your GitHub Personal Access Token:");
+        string token = Console.ReadLine();
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            Console.WriteLine("Error: GitHub token cannot be empty.");
+            return;
+        }
+
+        Console.WriteLine("Enter the directory where the output Excel file should be saved:");
+        string outputDirectory = Console.ReadLine();
+
+        if (!Directory.Exists(outputDirectory))
+        {
+            Console.WriteLine("Error: Output directory does not exist.");
+            return;
+        }
+
+        Console.WriteLine("Reading IDs from Excel file...");
+        var ids = ReadIdsFromExcel(excelFilePath);
+
+        Console.WriteLine("Searching GitHub for IDs in batches of 10...");
+        var allResults = new List<SearchResultWithId>();
+
+        for (int i = 0; i < ids.Count; i += 10)
+        {
+            var batch = ids.Skip(i).Take(10).ToList();
+            var tasks = batch.Select(id => SearchGitHub(id, token));
+            var batchResults = await Task.WhenAll(tasks);
+
+            foreach (var (id, results) in batch.Zip(batchResults, (id, results) => (id, results)))
+            {
+                foreach (var result in results)
+                {
+                    allResults.Add(new SearchResultWithId
+                    {
+                        Id = id,
+                        Repository = result.Repository,
+                        Path = result.Path,
+                        Url = result.Url
+                    });
+                }
+            }
+        }
+
+        Console.WriteLine("Writing results to Excel...");
+        string outputFilePath = Path.Combine(outputDirectory, "GitHubSearchResults.xlsx");
+        WriteResultsToExcel(allResults, outputFilePath);
+
+        Console.WriteLine($"Results written to {outputFilePath}");
+    }
+
+    static List<string> ReadIdsFromExcel(string excelFilePath)
+    {
+        var ids = new List<string>();
+
+        ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+        using (var package = new ExcelPackage(new FileInfo(excelFilePath)))
+        {
+            var worksheet = package.Workbook.Worksheets[0];
+            int rows = worksheet.Dimension.Rows;
+
+            for (int row = 1; row <= rows; row++)
+            {
+                var cellValue = worksheet.Cells[row, 1].Text;
+                if (!string.IsNullOrEmpty(cellValue))
+                {
+                    ids.Add(cellValue);
+                }
+            }
+        }
+
+        return ids;
+    }
+
+    static async Task<List<SearchResult>> SearchGitHub(string query, string token)
+    {
+        const int perPage = 100;
+        int page = 1;
+        var allResults = new List<SearchResult>();
+
+        using (HttpClient client = new HttpClient())
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            client.DefaultRequestHeaders.Add("User-Agent", "CSharp-Console-App");
+
+            while (true)
+            {
+                string url = $"https://api.github.com/search/code?q={query}&per_page={perPage}&page={page}";
+                var response = await client.GetAsync(url);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"Error: {response.StatusCode} - {response.ReasonPhrase}");
+                    break;
+                }
+
+                string responseBody = await response.Content.ReadAsStringAsync();
+                var searchResponse = JsonConvert.DeserializeObject<SearchResponse>(responseBody);
+
+                if (searchResponse?.Items == null || searchResponse.Items.Count == 0)
+                {
+                    break;
+                }
+
+                allResults.AddRange(searchResponse.Items);
+
+                if (searchResponse.Items.Count < perPage)
+                {
+                    break;
+                }
+
+                page++;
+            }
+        }
+
+        return allResults;
+    }
+
+    static void WriteResultsToExcel(List<SearchResultWithId> results, string outputFilePath)
+    {
+        ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+        using (var package = new ExcelPackage())
+        {
+            var worksheet = package.Workbook.Worksheets.Add("GitHub Results");
+
+            worksheet.Cells[1, 1].Value = "Search ID";
+            worksheet.Cells[1, 2].Value = "Repository";
+            worksheet.Cells[1, 3].Value = "File Path";
+            worksheet.Cells[1, 4].Value = "URL";
+
+            for (int i = 0; i < results.Count; i++)
+            {
+                var result = results[i];
+                worksheet.Cells[i + 2, 1].Value = result.Id;
+                worksheet.Cells[i + 2, 2].Value = result.Repository.FullName;
+                worksheet.Cells[i + 2, 3].Value = result.Path;
+                worksheet.Cells[i + 2, 4].Value = result.Url;
+            }
+
+            package.SaveAs(new FileInfo(outputFilePath));
+        }
+    }
+}
+
+class SearchResponse
+{
+    [JsonProperty("items")]
+    public List<SearchResult> Items { get; set; }
+}
+
+class SearchResult
+{
+    [JsonProperty("repository")]
+    public Repository Repository { get; set; }
+
+    [JsonProperty("path")]
+    public string Path { get; set; }
+
+    [JsonProperty("html_url")]
+    public string Url { get; set; }
+}
+
+class Repository
+{
+    [JsonProperty("full_name")]
+    public string FullName { get; set; }
+}
+
+class SearchResultWithId
+{
+    public string Id { get; set; }
+    public Repository Repository { get; set; }
+    public string Path { get; set; }
+    public string Url { get; set; }
+}
