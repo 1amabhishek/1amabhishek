@@ -240,3 +240,48 @@ class Program
         }
     }
 }
+
+
+static async Task<string> FetchFileContent(string repo, string filePath, List<string> tokens)
+    {
+        using (HttpClient client = new HttpClient())
+        {
+            int tokenIndex = 0;
+
+            while (true)
+            {
+                string currentToken = tokens[tokenIndex];
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", currentToken);
+                client.DefaultRequestHeaders.Add("User-Agent", "CSharp-Console-App");
+
+                string apiUrl = $"https://api.github.com/repos/{repo}/contents/{filePath}";
+
+                HttpResponseMessage response = await client.GetAsync(apiUrl);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    string jsonResponse = await response.Content.ReadAsStringAsync();
+                    var contentData = JsonConvert.DeserializeObject<FileContentResponse>(jsonResponse);
+
+                    if (contentData?.Content != null)
+                    {
+                        return Encoding.UTF8.GetString(Convert.FromBase64String(contentData.Content)); // 🔹 Decode Base64 Content
+                    }
+                    return "";
+                }
+
+                if ((int)response.StatusCode == 403)
+                {
+                    tokenIndex = (tokenIndex + 1) % tokens.Count;
+                    if (tokenIndex == 0)
+                    {
+                        Console.WriteLine("❌ All tokens exhausted. Retrying in 1 minute...");
+                        await Task.Delay(60000);
+                    }
+                    continue;
+                }
+
+                return "";
+            }
+        }
+    }
