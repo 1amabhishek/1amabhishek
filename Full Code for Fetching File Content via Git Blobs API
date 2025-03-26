@@ -1,0 +1,114 @@
+using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+
+class Program
+{
+    static async Task Main(string[] args)
+    {
+        // Replace with your actual repository details
+        string owner = "charlesschwab";  
+        string repo = "mobile-accounts-bff";  
+        string branch = "main"; // Change this if needed  
+        string filePath = "src/Mobile.Accounts.BFF.Domain/Handlers/PalPositionsHandler.cs";  
+
+        // GitHub Personal Access Tokens  
+        List<string> tokens = new List<string>  
+        {  
+            "ghp_XXXXXXXXXXXXXXXXXXXXXX",  
+            "ghp_YYYYYYYYYYYYYYYYYYYYYY"  
+        };  
+
+        Console.WriteLine($"Fetching file content for: {filePath}");
+
+        string fileContent = await FetchFileContent(owner, repo, branch, filePath, tokens);
+        
+        if (!string.IsNullOrEmpty(fileContent))
+        {
+            Console.WriteLine("✅ File Content Retrieved:\n");
+            Console.WriteLine(fileContent);
+        }
+        else
+        {
+            Console.WriteLine("❌ Failed to fetch file content.");
+        }
+    }
+
+    static async Task<string> FetchFileContent(string owner, string repo, string branch, string filePath, List<string> tokens)
+    {
+        using (HttpClient client = new HttpClient())
+        {
+            int tokenIndex = 0;
+
+            while (true)
+            {
+                string currentToken = tokens[tokenIndex];
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", currentToken);
+                client.DefaultRequestHeaders.Add("User-Agent", "CSharp-Console-App");
+
+                // Step 1: Get File Metadata (to retrieve SHA)
+                string metadataUrl = $"https://api.github.com/repos/{owner}/{repo}/contents/{filePath}?ref={branch}";
+                HttpResponseMessage metadataResponse = await client.GetAsync(metadataUrl);
+
+                if (!metadataResponse.IsSuccessStatusCode)
+                {
+                    if ((int)metadataResponse.StatusCode == 403) // Rate limit exceeded
+                    {
+                        tokenIndex = (tokenIndex + 1) % tokens.Count;
+                        if (tokenIndex == 0)
+                        {
+                            Console.WriteLine("❌ All tokens exhausted. Retrying in 1 minute...");
+                            await Task.Delay(60000);
+                        }
+                        continue;
+                    }
+                    return "";
+                }
+
+                string metadataJson = await metadataResponse.Content.ReadAsStringAsync();
+                var metadata = JsonConvert.DeserializeObject<FileContentResponse>(metadataJson);
+
+                if (metadata?.Sha == null)
+                {
+                    Console.WriteLine("❌ Failed to retrieve SHA.");
+                    return "";
+                }
+
+                Console.WriteLine($"🔹 File SHA: {metadata.Sha}");
+
+                // Step 2: Fetch File Content Using SHA
+                string blobUrl = $"https://api.github.com/repos/{owner}/{repo}/git/blobs/{metadata.Sha}";
+                HttpResponseMessage blobResponse = await client.GetAsync(blobUrl);
+
+                if (blobResponse.IsSuccessStatusCode)
+                {
+                    string blobJson = await blobResponse.Content.ReadAsStringAsync();
+                    var blobData = JsonConvert.DeserializeObject<FileContentResponse>(blobJson);
+
+                    if (!string.IsNullOrEmpty(blobData?.Content))
+                    {
+                        Console.WriteLine("✅ File content fetched successfully.");
+                        return Encoding.UTF8.GetString(Convert.FromBase64String(blobData.Content)); // Decode Base64
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"❌ Error fetching blob content: {blobResponse.StatusCode}");
+                }
+
+                return "";
+            }
+        }
+    }
+}
+
+// Supporting Classes  
+class FileContentResponse
+{
+    [JsonProperty("sha")] public string Sha { get; set; }
+    [JsonProperty("content")] public string Content { get; set; }
+}
