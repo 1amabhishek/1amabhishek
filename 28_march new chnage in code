@@ -1,14 +1,3 @@
-Got it! Here is the revised version of your **GitHub search console app** with:  
-
-- **Proper error handling** for **403, 407, 401, 429**  
-- **Token rotation** to avoid API rate limits  
-- **Exponential backoff** for retrying failed requests  
-- **Detailed inline comments** explaining each step  
-
----
-
-### **C# GitHub Search Console App**
-```csharp
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -24,24 +13,24 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        // List of GitHub API tokens for rotation
+        // List of GitHub Personal Access Tokens (to handle rate limits)
         List<string> tokens = new List<string>
         {
-            // Add your tokens here
+            // Add your GitHub tokens here
         };
 
-        // Path to Excel file containing IDs
+        // Get Excel file path containing search IDs
         string excelFilePath = "C:\\Development\\Github search app\\Github-search-Ids.xlsx";
 
-        // Validate if the file exists
         if (!File.Exists(excelFilePath))
         {
-            Console.WriteLine("Error: Excel file not found at the specified path.");
+            Console.WriteLine("Error: Excel file not found.");
             return;
         }
 
-        // Output directory setup
+        // Get directory for output file
         string outputDirectory = "C:\\Development\\Github search app";
+
         if (!Directory.Exists(outputDirectory))
         {
             Console.WriteLine("Error: Output directory does not exist.");
@@ -51,40 +40,49 @@ class Program
         Console.WriteLine("Reading IDs from Excel file...");
         var ids = ReadIdsFromExcel(excelFilePath);
 
-        int batchSize = 5;  // Number of IDs to process per batch
-        int sleepThreshold = 180;  // Pause execution after processing a certain number of IDs
-        int processedCount = 0;
+        int batchSize = 5;  // Number of IDs processed per batch
+        int sleepThreshold = 180;  // Pause after processing this many IDs
+        int processedCount = 0;  // Track processed IDs
+
+        Console.WriteLine("Searching GitHub for IDs...");
         var allResults = new List<SearchResultWithId>();
 
-        Console.WriteLine("Starting GitHub search...");
-
+        // Process search IDs in batches
         for (int i = 0; i < ids.Count; i += batchSize)
         {
             var batch = ids.GetRange(i, Math.Min(batchSize, ids.Count - i));
             Console.WriteLine($"Processing batch {i / batchSize + 1}: {string.Join(", ", batch)}");
 
+            var batchResults = new List<SearchResultWithId>();
+
+            // Process each ID in the batch
             foreach (var id in batch)
             {
                 Console.WriteLine($"Searching for ID: {id}");
-
                 var results = await SearchGitHub(id, tokens);
                 processedCount++;
 
-                foreach (var result in results)
+                // If no results found, add a placeholder
+                if (results.Count == 0)
                 {
-                    bool isMatch = await VerifyIdInFile(result, id, tokens);
-                    if (isMatch)
+                    batchResults.Add(new SearchResultWithId
                     {
-                        Console.WriteLine($"ID {id} found in {result.Path}");
-                        allResults.Add(result);
-                    }
-                    else
-                    {
-                        Console.WriteLine($"ID {id} NOT found in {result.Path}");
-                    }
+                        Id = id,
+                        Repository = new Repository { FullName = "NULL" },
+                        Path = "NULL",
+                        Url = "NULL"
+                    });
+                }
+                else
+                {
+                    batchResults.AddRange(results);
                 }
             }
 
+            // Store batch results
+            allResults.AddRange(batchResults);
+
+            // Pause if threshold is reached
             if (processedCount >= sleepThreshold)
             {
                 Console.WriteLine($"Processed {processedCount} IDs. Sleeping for 1 minute...");
@@ -93,31 +91,34 @@ class Program
             }
         }
 
-        Console.WriteLine("Saving results to Excel...");
+        // Write results to Excel file
+        Console.WriteLine("Writing results to Excel...");
         string outputFilePath = Path.Combine(outputDirectory, "GitHubSearchResults.xlsx");
         WriteResultsToExcel(allResults, outputFilePath);
-        Console.WriteLine($"Results saved to {outputFilePath}");
+        Console.WriteLine($"Results written to {outputFilePath}");
     }
 
-    // GitHub Code Search with proper error handling
+    /// <summary>
+    /// Searches GitHub for the given query and returns matching files.
+    /// </summary>
     static async Task<List<SearchResultWithId>> SearchGitHub(string query, List<string> tokens)
     {
-        const int perPage = 100;
-        int page = 1;
+        const int perPage = 100;  // Maximum results per API call
+        int page = 1;  // Pagination tracking
         var allResults = new List<SearchResultWithId>();
-        int retryDelay = 5; // Initial retry delay in seconds
-        int tokenIndex = 0;
+        int retryDelay = 5;
+        int tokenIndex = 0;  // Track which token is in use
 
         using (HttpClient client = new HttpClient())
         {
             while (true)
             {
-                // Use the current API token
+                // Set authentication token
                 string currentToken = tokens[tokenIndex];
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", currentToken);
                 client.DefaultRequestHeaders.Add("User-Agent", "CSharp-Console-App");
 
-                // GitHub API URL
+                // GitHub API URL for searching code
                 string url = $"https://api.github.com/search/code?q={query}+user:charlesschwab&per_page={perPage}&page={page}";
                 HttpResponseMessage response;
 
@@ -127,36 +128,35 @@ class Program
                 }
                 catch (HttpRequestException ex)
                 {
-                    Console.WriteLine($"Network Error: {ex.Message}");
-                    Console.WriteLine($"Retrying in {retryDelay} seconds...");
+                    Console.WriteLine($"Network Error: {ex.Message}. Retrying in {retryDelay} seconds...");
                     await Task.Delay(retryDelay * 1000);
-                    retryDelay = Math.Min(retryDelay * 2, 60); // Exponential backoff
+                    retryDelay = Math.Min(retryDelay * 2, 60);
                     continue;
-                }
-
-                switch ((int)response.StatusCode)
-                {
-                    case 401:
-                        Console.WriteLine("Unauthorized (401). Check your API token.");
-                        return allResults;
-
-                    case 403:
-                        Console.WriteLine("Forbidden (403). Possible rate limit hit. Rotating API token...");
-                        tokenIndex = (tokenIndex + 1) % tokens.Count;
-                        continue;
-
-                    case 407:
-                        Console.WriteLine("Proxy Authentication Required (407). Check your network settings.");
-                        return allResults;
-
-                    case 429:
-                        Console.WriteLine("Too Many Requests (429). Pausing execution...");
-                        await Task.Delay(60 * 1000);
-                        continue;
                 }
 
                 if (!response.IsSuccessStatusCode)
                 {
+                    // Handle different error codes
+                    if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized ||
+                        response.StatusCode == System.Net.HttpStatusCode.ProxyAuthenticationRequired)
+                    {
+                        Console.WriteLine("Auth error. Switching to next token...");
+                        tokenIndex = (tokenIndex + 1) % tokens.Count;
+
+                        if (tokenIndex == 0)
+                        {
+                            Console.WriteLine("All tokens exhausted. Please check your credentials.");
+                            break;
+                        }
+                        continue;
+                    }
+                    else if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                    {
+                        Console.WriteLine("Rate limit reached (403). Waiting before retrying...");
+                        await Task.Delay(60 * 1000);
+                        continue;
+                    }
+
                     Console.WriteLine($"Error {response.StatusCode}: {response.ReasonPhrase}");
                     break;
                 }
@@ -167,13 +167,24 @@ class Program
                 if (searchResponse?.Items == null || searchResponse.Items.Count == 0)
                     break;
 
-                allResults.AddRange(searchResponse.Items.Select(item => new SearchResultWithId
+                foreach (var item in searchResponse.Items)
                 {
-                    Id = query,
-                    Repository = item.Repository,
-                    Path = item.Path,
-                    Url = item.HtmlUrl
-                }));
+                    var result = new SearchResultWithId
+                    {
+                        Id = query,
+                        Repository = item.Repository,
+                        Path = item.Path,
+                        Url = item.HtmlUrl
+                    };
+
+                    // Verify if the ID is inside the file
+                    bool isMatch = await VerifyIdInFile(result, query, tokens);
+
+                    if (isMatch)
+                    {
+                        allResults.Add(result);
+                    }
+                }
 
                 if (searchResponse.Items.Count < perPage)
                     break;
@@ -185,86 +196,47 @@ class Program
         return allResults;
     }
 
-    // Verify if the ID actually exists in the file content
+    /// <summary>
+    /// Fetches the actual file content and checks if the ID is present.
+    /// </summary>
     static async Task<bool> VerifyIdInFile(SearchResultWithId result, string id, List<string> tokens)
     {
         using (HttpClient client = new HttpClient())
         {
-            client.DefaultRequestHeaders.Add("User-Agent", "CSharp-Console-App");
+            // Extract owner and repo name
+            string[] repoParts = result.Repository.FullName.Split('/');
+            if (repoParts.Length < 2) return false;
 
-            // Convert GitHub URL to raw file URL
-            string rawUrl = result.Url.Replace("https://github.com/", "https://raw.githubusercontent.com/")
-                                      .Replace("/blob/", "/");
+            string owner = repoParts[0];
+            string repo = repoParts[1];
+            string branch = "main";  // Assume "main" branch (can be improved)
+            string filePath = result.Path;
 
-            HttpResponseMessage response = await client.GetAsync(rawUrl);
+            // Construct raw file URL
+            string rawUrl = $"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{filePath}";
 
-            if (!response.IsSuccessStatusCode)
+            try
             {
-                Console.WriteLine($"Failed to download {rawUrl}. Skipping...");
-                return false;
-            }
+                HttpResponseMessage response = await client.GetAsync(rawUrl);
 
-            string fileContent = await response.Content.ReadAsStringAsync();
-            return fileContent.Contains(id);
-        }
-    }
-
-    // Read IDs from Excel file
-    static List<string> ReadIdsFromExcel(string filePath)
-    {
-        var ids = new List<string>();
-        ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
-
-        using (var package = new ExcelPackage(new FileInfo(filePath)))
-        {
-            var worksheet = package.Workbook.Worksheets[0];
-            int rowCount = worksheet.Dimension.Rows;
-
-            for (int row = 2; row <= rowCount; row++)
-            {
-                string id = worksheet.Cells[row, 1].Text.Trim();
-                if (!string.IsNullOrWhiteSpace(id))
+                if (response.IsSuccessStatusCode)
                 {
-                    ids.Add(id);
+                    string fileContent = await response.Content.ReadAsStringAsync();
+                    return fileContent.Contains(id);
                 }
             }
-        }
-
-        return ids;
-    }
-
-    // Write search results to an Excel file
-    static void WriteResultsToExcel(List<SearchResultWithId> results, string filePath)
-    {
-        ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
-
-        using (var package = new ExcelPackage())
-        {
-            var worksheet = package.Workbook.Worksheets.Add("Results");
-
-            worksheet.Cells[1, 1].Value = "ID";
-            worksheet.Cells[1, 2].Value = "Repository";
-            worksheet.Cells[1, 3].Value = "Path";
-            worksheet.Cells[1, 4].Value = "URL";
-
-            for (int i = 0; i < results.Count; i++)
+            catch (Exception ex)
             {
-                worksheet.Cells[i + 2, 1].Value = results[i].Id;
-                worksheet.Cells[i + 2, 2].Value = results[i].Repository.FullName;
-                worksheet.Cells[i + 2, 3].Value = results[i].Path;
-                worksheet.Cells[i + 2, 4].Value = results[i].Url;
+                Console.WriteLine($"Error fetching file: {ex.Message}");
             }
-
-            package.SaveAs(new FileInfo(filePath));
         }
+
+        return false;
     }
 }
 
-// Supporting classes
-class SearchResponse { public List<SearchResult> Items { get; set; } }
+//Supporting Classes
+class SearchResponse { [JsonProperty("items")] public List<SearchResult> Items { get; set; } }
 class SearchResult { public Repository Repository { get; set; } public string Path { get; set; } public string HtmlUrl { get; set; } }
-class Repository { public string FullName { get; set; } }
-class SearchResultWithId : SearchResult { public string Id { get; set; } }
-```  
-
-This version maintains **all essential features** with **clear and detailed comments**.
+class Repository { [JsonProperty("full_name")] public string FullName { get; set; } }
+class SearchResultWithId { public string Id { get; set; } public Repository Repository { get; set; } public string Path { get; set; } public string Url { get; set; } }
