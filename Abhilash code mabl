@@ -1,0 +1,3 @@
+let text = document.getElementById("myElement").textContent;
+let count = (text.match(/message segment/g) || []).length;
+if (count === 2) console.log("Appears twice");
