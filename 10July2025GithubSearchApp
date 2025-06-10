@@ -350,3 +350,15 @@ class SearchResult { public Repository Repository { get; set; } public string Pa
 class Repository { [JsonProperty("full_name")] public string FullName { get; set; } }
 class SearchResultWithId { public string Id { get; set; } public Repository Repository { get; set; } public string Path { get; set; } public string Url { get; set; } }
 class FileContentResponse { [JsonProperty("content")] public string Content { get; set; } }
+
+
+Excel → Read IDs → For each ID:
+   ↓
+SearchGitHub → Search Code API → Get file(s)
+   ↓
+VerifyIdInFile → For each file → Get file content → Check ID present?
+   ↓
+If match → Add to output Excel
+Else → Skip
+
+Finally → WriteResultsToExcel → Excel output.
