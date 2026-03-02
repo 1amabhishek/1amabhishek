@@ -1,0 +1,83 @@
+Install-Package Octokit
+Install-Package ExcelDataReader
+Install-Package ExcelDataReader.DataSet
+
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using ExcelDataReader;
+using Octokit;
+
+class Program
+{
+    static async Task Main(string[] args)
+    {
+        // Set up GitHub client with personal access token
+        var client = new GitHubClient(new ProductHeaderValue("CMS-ID-Search-App"));
+        client.Credentials = new Credentials("your-github-token");  // Replace with your GitHub token
+
+        // Read CMS IDs from Excel
+        var cmsIds = ReadCmsIdsFromExcel("path-to-your-excel-file.xlsx");
+
+        // Define repositories and files to search
+        string owner = "your-github-username-or-org";
+        List<string> repositories = new List<string> { "repo1", "repo2" };  // Add repository names
+
+        // Search each CMS ID in each repository
+        foreach (var cmsId in cmsIds)
+        {
+            Console.WriteLine($"Searching for CMS ID: {cmsId}");
+            foreach (var repo in repositories)
+            {
+                var results = await SearchCmsIdInRepo(client, owner, repo, cmsId);
+                foreach (var result in results)
+                {
+                    Console.WriteLine($"Found in {result.Path} of {repo} repository.");
+                }
+            }
+        }
+    }
+
+    static List<string> ReadCmsIdsFromExcel(string filePath)
+    {
+        var cmsIds = new List<string>();
+
+        using (var stream = File.Open(filePath, FileMode.Open, FileAccess.Read))
+        {
+            using (var reader = ExcelReaderFactory.CreateReader(stream))
+            {
+                while (reader.Read()) // Read each row
+                {
+                    cmsIds.Add(reader.GetString(0)); // Assuming CMS IDs are in the first column
+                }
+            }
+        }
+        return cmsIds;
+    }
+
+    static async Task<IReadOnlyList<SearchCode>> SearchCmsIdInRepo(GitHubClient client, string owner, string repo, string cmsId)
+    {
+        var request = new SearchCodeRequest(cmsId)
+        {
+            In = new[] { CodeInQualifier.Path, CodeInQualifier.File },
+            Repo = $"{owner}/{repo}"
+        };
+
+        var result = await client.Search.SearchCode(request);
+        return result.Items;
+    }
+}
+
+
+
+Explanation
+GitHub Authentication: The app authenticates with a GitHub token to make API requests.
+Reading CMS IDs: The ReadCmsIdsFromExcel function reads CMS IDs from an Excel file, storing them in a list.
+Searching Repositories: SearchCmsIdInRepo searches for each CMS ID in the specified repositories. The SearchCodeRequest object defines the query scope (file path and content).
+Execution
+Replace "your-github-token", "path-to-your-excel-file.xlsx", "your-github-username-or-org", and repository names with your actual values. Running the app will print the file paths in each repository where the CMS IDs are found.
+
+This should provide a good foundation for your requirements. Let me know if you’d like more details on specific parts of this setup!
